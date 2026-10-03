@@ -1,16 +1,225 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
+#include <Geode/modify/RingObject.hpp>
+#include <Geode/binding/GravityEffectSprite.hpp>
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 using namespace geode::prelude;
 
+cocos2d::ccColor3B getPadColor(GameObjectType type, GameObject* obj);
+cocos2d::ccColor3B getRingColor(GameObjectType type, GameObject* obj);
+
+static int s_frame = 0;
+static std::unordered_map<RingObject*, int> s_lastOutline;
+static std::unordered_map<RingObject*, int> s_lastHit;
+static std::unordered_set<RingObject*> s_armed;
+static std::vector<Ref<RingObject>> s_scaleReset;
+static float s_resetDelay = 0.f;
+
+bool tryConsumeRingWave(RingObject* ring, bool click) {
+    auto& map = click ? s_lastHit : s_lastOutline;
+    auto it = map.find(ring);
+    if (it != map.end() && s_frame - it->second < 12) {
+        return false;
+    }
+    map[ring] = s_frame;
+    return true;
+}
+
+class $modify(PlaytestRingObject, RingObject) {
+    void powerOnObject(int state) {
+        auto editor = LevelEditorLayer::get();
+        if (editor && editor->m_playbackMode == PlaybackMode::Playing) {
+            if (m_isRingPoweredOn || s_armed.count(this)) {
+                m_isRingPoweredOn = true;
+                return;
+            }
+            m_isRingPoweredOn = true;
+            if (m_hasNoEffects) {
+                return;
+            }
+            s_armed.insert(this);
+            this->spawnCircle();
+            return;
+        }
+        RingObject::powerOnObject(state);
+    }
+
+    void spawnCircle() {
+        auto editor = LevelEditorLayer::get();
+        if (editor && editor->m_playbackMode == PlaybackMode::Playing) {
+            if (m_hasNoEffects) {
+                return;
+            }
+            if (!editor->m_objectLayer) {
+                return;
+            }
+            if (!tryConsumeRingWave(this, false)) {
+                return;
+            }
+            auto wave = CCCircleWave::create(5.f, 55.f, 0.25f, false, true);
+            if (!wave) {
+                return;
+            }
+            wave->m_circleMode = CircleMode::Outline;
+            wave->m_lineWidth = 2;
+            wave->setPosition(this->getPosition());
+            wave->followObject(this, false);
+            editor->m_objectLayer->addChild(wave, this->getZOrder());
+            return;
+        }
+        RingObject::spawnCircle();
+    }
+};
+
 class $modify(PlaytestEditorLayer, LevelEditorLayer) {
+    struct Fields {
+        bool m_origPreviewParticles = false;
+        std::vector<Ref<RingObject>> m_rings;
+        std::vector<Ref<GameObject>> m_claimed;
+        std::vector<Ref<GameObject>> m_particleOwners;
+    };
+
+    void releaseOwnedParticles() {
+        for (auto obj : m_fields->m_particleOwners) {
+            if (obj && obj->m_particle) {
+                obj->m_particle->removeFromParent();
+                obj->m_particle = nullptr;
+            }
+        }
+        m_fields->m_particleOwners.clear();
+    }
+
+void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
+        auto director = CCDirector::sharedDirector();
+        auto scene = director->getRunningScene();
+        if (!scene) {
+            return;
+        }
+        if (auto old = scene->getChildByID("gravity-effect"_spr)) {
+            old->removeFromParent();
+        }
+        auto sprite = GravityEffectSprite::create();
+        if (!sprite) {
+            return;
+        }
+        sprite->setID("gravity-effect"_spr);
+        sprite->updateSpritesColor(color);
+        auto win = director->getWinSize();
+        CCPoint from;
+        CCPoint to;
+        if (!sideways) {
+            sprite->setFlipY(!flip);
+            if (flip) {
+                from = CCPoint(win.width * 0.5f, -95.f);
+                to = CCPoint(win.width * 0.5f, win.height + 95.f);
+            } else {
+                from = CCPoint(win.width * 0.5f, win.height + 95.f);
+                to = CCPoint(win.width * 0.5f, -95.f);
+            }
+        } else {
+            sprite->setRotation(90.f);
+            if (flip) {
+                from = CCPoint(-95.f, win.height * 0.5f);
+                to = CCPoint(win.width + 95.f, win.height * 0.5f);
+            } else {
+                from = CCPoint(win.width + 95.f, win.height * 0.5f);
+                to = CCPoint(-95.f, win.height * 0.5f);
+            }
+        }
+        sprite->setPosition(from);
+        scene->addChild(sprite, 100);
+        auto move = CCMoveTo::create(0.4f, to);
+        auto clean = CCCallFunc::create(sprite, callfunc_selector(CCNode::removeFromParent));
+        sprite->runAction(CCSequence::create(move, clean, nullptr));
+    }
+
     void onPlaytest() {
         LevelEditorLayer::onPlaytest();
-
-        FMODAudioEngine::sharedEngine()->m_metering = true;
-
-        for (auto* player : {m_player1, m_player2}) {
-            if (!player) continue;
+        m_fields->m_origPreviewParticles = m_previewParticles;
+        m_previewParticles = true;
+        this->updatePreviewParticles();
+        m_fields->m_rings.clear();
+        for (auto obj : m_fields->m_claimed) {
+            if (obj && obj->m_particle) {
+                obj->unclaimParticle();
+            }
+        }
+        m_fields->m_claimed.clear();
+        this->releaseOwnedParticles();
+        s_lastOutline.clear();
+        s_lastHit.clear();
+        s_armed.clear();
+        s_scaleReset.clear();
+        s_resetDelay = 0.f;
+        if (m_objects) {
+            for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
+                if (!obj) {
+                    continue;
+                }
+                if (auto ring = typeinfo_cast<RingObject*>(obj)) {
+                    ring->m_isActivated = false;
+                    ring->m_isRingPoweredOn = false;
+                    m_fields->m_rings.push_back(ring);
+                }
+                if (obj->m_hasParticles && !obj->m_hasNoParticles && !obj->m_particleLocked && !obj->m_particle) {
+                    obj->claimParticle();
+                    if (obj->m_particle) {
+                        m_fields->m_claimed.push_back(obj);
+                        continue;
+                    }
+                }
+                if (obj->m_particle) {
+                    continue;
+                }
+                if (typeinfo_cast<RingObject*>(obj)) {
+                    auto p = CCParticleSystemQuad::create("ringEffect.plist", false);
+                    if (p) {
+                        p->setPosition(obj->getPosition());
+                        p->setRotation(obj->getRotation());
+                        p->setScale(obj->getScale());
+                        p->setPositionType(kCCPositionTypeGrouped);
+                        auto c = ccc4FFromccc3B(getRingColor(obj->m_objectType, obj));
+                        p->setStartColor(c);
+                        p->setEndColor(c);
+                        m_objectLayer->addChild(p, obj->getZOrder() - 1);
+                        obj->m_particle = p;
+                        m_fields->m_particleOwners.push_back(obj);
+                    }
+                } else if (obj->m_objectType == GameObjectType::YellowJumpPad ||
+                           obj->m_objectType == GameObjectType::PinkJumpPad ||
+                           obj->m_objectType == GameObjectType::GravityPad ||
+                           obj->m_objectType == GameObjectType::RedJumpPad ||
+                           obj->m_objectType == GameObjectType::SpiderPad) {
+                    auto p = CCParticleSystemQuad::create("bumpEffect.plist", false);
+                    if (p) {
+                        p->setPosition(obj->getPosition());
+                        p->setRotation(obj->getRotation());
+                        p->setScale(obj->getScale());
+                        p->setPositionType(kCCPositionTypeGrouped);
+                        auto c = ccc4FFromccc3B(getPadColor(obj->m_objectType, obj));
+                        p->setStartColor(c);
+                        p->setEndColor(c);
+                        m_objectLayer->addChild(p, obj->getZOrder() - 1);
+                        obj->m_particle = p;
+                        m_fields->m_particleOwners.push_back(obj);
+                    }
+                }
+            }
+        }
+        FMODAudioEngine::sharedEngine()->enableMetering();
+        if (auto scene = CCDirector::sharedDirector()->getRunningScene()) {
+            if (auto old = scene->getChildByID("gravity-effect"_spr)) {
+                old->removeFromParent();
+            }
+        }
+        for (auto player : {m_player1, m_player2}) {
+            if (!player) {
+                continue;
+            }
             player->m_playEffects = true;
             if (!player->m_regularTrail || !player->m_waveTrail) {
                 player->setupStreak();
@@ -19,37 +228,134 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
         }
     }
 
+    void updateVisibility(float dt) {
+        LevelEditorLayer::updateVisibility(dt);
+        if (m_playbackMode != PlaybackMode::Playing) {
+            return;
+        }
+        float pulse = FMODAudioEngine::sharedEngine()->m_pulse1;
+        for (auto const& ref : m_fields->m_rings) {
+            auto ring = ref.data();
+            if (!ring) {
+                continue;
+            }
+            if (ring->m_unk3F8) {
+                continue;
+            }
+            if (!ring->m_usesAudioScale || ring->m_hasNoAudioScale) {
+                continue;
+            }
+            float v = pulse;
+            if (ring->m_customAudioScale) {
+                v = ring->m_minAudioScale
+                    + (ring->m_maxAudioScale - ring->m_minAudioScale) * (pulse - 0.1f);
+            }
+            ring->setRScale(std::min(v + 0.3f, 1.2f));
+        }
+    }
+
     void updateEditor(float dt) {
         auto gm = GameManager::sharedState();
         auto origPlayLayer = gm->m_playLayer;
-
-        auto* editorFlag = reinterpret_cast<bool*>(reinterpret_cast<uintptr_t>(gm) + 0x2ba);
-        bool origEditorFlag = *editorFlag;
-
+        bool origEnabled = gm->m_editorEnabled;
+        bool scoped = false;
         if (m_playbackMode == PlaybackMode::Playing) {
             if (!origPlayLayer) {
                 gm->m_playLayer = reinterpret_cast<PlayLayer*>(static_cast<GJBaseGameLayer*>(this));
             }
-            *editorFlag = false;
-
+            gm->m_editorEnabled = false;
+            scoped = true;
+            s_frame++;
             float pulse = FMODAudioEngine::sharedEngine()->m_pulse1;
-            if (m_player1) m_player1->m_audioScale = pulse;
-            if (m_player2) m_player2->m_audioScale = pulse;
+            if (m_player1) {
+                m_player1->m_audioScale = pulse;
+            }
+            if (m_player2) {
+                m_player2->m_audioScale = pulse;
+            }
+            for (auto it = s_armed.begin(); it != s_armed.end();) {
+                auto ring = *it;
+                bool close = false;
+                for (auto player : {m_player1, m_player2}) {
+                    if (!player || !ring) {
+                        continue;
+                    }
+                    auto a = player->getPosition();
+                    auto b = ring->getPosition();
+                    float dx = a.x - b.x;
+                    float dy = a.y - b.y;
+                    if (dx * dx + dy * dy < 6400.f) {
+                        close = true;
+                        break;
+                    }
+                }
+                if (close) {
+                    ++it;
+                } else {
+                    if (ring) {
+                        ring->m_isRingPoweredOn = false;
+                    }
+                    it = s_armed.erase(it);
+                }
+            }
         }
-
         LevelEditorLayer::updateEditor(dt);
-
         if (gm->m_playLayer == reinterpret_cast<PlayLayer*>(static_cast<GJBaseGameLayer*>(this))) {
             gm->m_playLayer = origPlayLayer;
         }
-        *editorFlag = origEditorFlag;
+        if (scoped) {
+            gm->m_editorEnabled = origEnabled;
+        }
+        if (s_resetDelay > 0.f) {
+            s_resetDelay -= dt;
+            if (s_resetDelay <= 0.f) {
+                for (auto ring : s_scaleReset) {
+                    if (ring) {
+                        ring->m_isActivated = false;
+                        ring->m_isRingPoweredOn = false;
+                        ring->resetRScaleForced();
+                        ring->setRScale(1.f);
+                    }
+                }
+                s_scaleReset.clear();
+            }
+        }
     }
 
     void onStopPlaytest() {
-        FMODAudioEngine::sharedEngine()->m_metering = false;
-
-        for (auto* player : {m_player1, m_player2}) {
-            if (!player) continue;
+        for (auto ring : m_fields->m_rings) {
+            if (ring) {
+                ring->m_isActivated = false;
+                ring->m_isRingPoweredOn = false;
+                ring->resetRScaleForced();
+                ring->setRScale(1.f);
+                s_scaleReset.push_back(ring);
+            }
+        }
+        s_resetDelay = 0.5f;
+        m_fields->m_rings.clear();
+        for (auto obj : m_fields->m_claimed) {
+            if (obj && obj->m_particle) {
+                obj->unclaimParticle();
+            }
+        }
+        m_fields->m_claimed.clear();
+        this->releaseOwnedParticles();
+        s_lastOutline.clear();
+        s_lastHit.clear();
+        s_armed.clear();
+        m_previewParticles = m_fields->m_origPreviewParticles;
+        this->updatePreviewParticles();
+        FMODAudioEngine::sharedEngine()->disableMetering();
+        if (auto scene = CCDirector::sharedDirector()->getRunningScene()) {
+            if (auto old = scene->getChildByID("gravity-effect"_spr)) {
+                old->removeFromParent();
+            }
+        }
+        for (auto player : {m_player1, m_player2}) {
+            if (!player) {
+                continue;
+            }
             player->m_playEffects = false;
             player->deactivateStreak(true);
             player->stopStreak2();
@@ -65,16 +371,60 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
             player->setVisible(true);
             player->setOpacity(255);
         }
-
         LevelEditorLayer::onStopPlaytest();
     }
 
     void playerTookDamage(PlayerObject* player) {
         LevelEditorLayer::playerTookDamage(player);
-
+        for (auto ring : m_fields->m_rings) {
+            if (ring) {
+                ring->m_isRingPoweredOn = false;
+                ring->resetRScaleForced();
+            }
+        }
         if (player) {
             player->playDeathEffect();
             player->spawnCircle2();
+        }
+    }
+};
+
+void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
+    if (auto editor = static_cast<PlaytestEditorLayer*>(LevelEditorLayer::get())) {
+        editor->triggerGravitySweep(flip, sideways, color);
+    }
+}
+
+class $modify(PlaytestGameLayer, GJBaseGameLayer) {
+    void toggleDualMode(GameObject* obj, bool dual, PlayerObject* player, bool noEffects) {
+        GJBaseGameLayer::toggleDualMode(obj, dual, player, noEffects);
+        if (!m_isEditor) {
+            return;
+        }
+        if (!m_player2) {
+            return;
+        }
+        if (dual) {
+            m_player2->m_playEffects = true;
+            if (!m_player2->m_regularTrail || !m_player2->m_waveTrail) {
+                m_player2->setupStreak();
+            }
+            m_player2->activateStreak();
+            m_player2->spawnDualCircle();
+            if (m_player1) {
+                m_player1->spawnDualCircle();
+            }
+        } else {
+            m_player2->deactivateStreak(true);
+            m_player2->stopStreak2();
+            if (m_player2->m_waveTrail) {
+                m_player2->m_waveTrail->stopStroke();
+                m_player2->m_waveTrail->reset();
+            }
+            if (m_player2->m_regularTrail) {
+                m_player2->m_regularTrail->stopStroke();
+                m_player2->m_regularTrail->reset();
+            }
         }
     }
 };
