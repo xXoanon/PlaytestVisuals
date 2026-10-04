@@ -12,6 +12,40 @@ using namespace geode::prelude;
 cocos2d::ccColor3B getPadColor(GameObjectType type, GameObject* obj);
 cocos2d::ccColor3B getRingColor(GameObjectType type, GameObject* obj);
 
+struct PortalParticleTint {
+    cocos2d::ccColor4F start;
+    cocos2d::ccColor4F end;
+    bool hasStart;
+    bool hasEnd;
+};
+
+PortalParticleTint portalParticleTint(GameObjectType type) {
+    auto none = [] { return PortalParticleTint{{0, 0, 0, 0}, {0, 0, 0, 0}, false, false}; };
+    auto only = [](int r, int g, int b) {
+        return PortalParticleTint{{(float)r / 255.f, (float)g / 255.f, (float)b / 255.f, 1.f}, {0, 0, 0, 0}, true, false};
+    };
+    auto both = [](int r1, int g1, int b1, int r2, int g2, int b2) {
+        return PortalParticleTint{
+            {(float)r1 / 255.f, (float)g1 / 255.f, (float)b1 / 255.f, 1.f},
+            {(float)r2 / 255.f, (float)g2 / 255.f, (float)b2 / 255.f, 1.f},
+            true, true};
+    };
+    switch (type) {
+        case GameObjectType::InverseMirrorPortal: return only(255, 150, 0);
+        case GameObjectType::BallPortal: return both(255, 100, 0, 255, 100, 0);
+        case GameObjectType::UfoPortal: return both(255, 200, 0, 255, 100, 0);
+        case GameObjectType::DualPortal: return both(255, 200, 0, 255, 100, 0);
+        case GameObjectType::SoloPortal: return both(0, 200, 255, 0, 100, 255);
+        case GameObjectType::WavePortal: return both(0, 200, 255, 0, 100, 255);
+        case GameObjectType::RobotPortal: return both(150, 150, 150, 50, 50, 75);
+        case GameObjectType::TeleportPortal: return both(0, 255, 255, 0, 100, 150);
+        case GameObjectType::SpiderPortal: return both(200, 0, 255, 200, 0, 255);
+        case GameObjectType::SwingPortal: return both(255, 255, 0, 255, 200, 0);
+        case GameObjectType::GravityTogglePortal: return both(0, 255, 0, 0, 255, 0);
+        default: return none();
+    }
+}
+
 static int s_frame = 0;
 static std::unordered_map<RingObject*, int> s_lastOutline;
 static std::unordered_map<RingObject*, int> s_lastHit;
@@ -27,6 +61,85 @@ bool tryConsumeRingWave(RingObject* ring, bool click) {
     }
     map[ring] = s_frame;
     return true;
+}
+
+bool isPortalType(GameObjectType type) {
+    switch (type) {
+        case GameObjectType::NormalGravityPortal:
+        case GameObjectType::InverseGravityPortal:
+        case GameObjectType::ShipPortal:
+        case GameObjectType::CubePortal:
+        case GameObjectType::InverseMirrorPortal:
+        case GameObjectType::NormalMirrorPortal:
+        case GameObjectType::BallPortal:
+        case GameObjectType::RegularSizePortal:
+        case GameObjectType::MiniSizePortal:
+        case GameObjectType::UfoPortal:
+        case GameObjectType::DualPortal:
+        case GameObjectType::SoloPortal:
+        case GameObjectType::WavePortal:
+        case GameObjectType::RobotPortal:
+        case GameObjectType::SpiderPortal:
+        case GameObjectType::SwingPortal:
+        case GameObjectType::GravityTogglePortal:
+            return true;
+        default:
+            return false;
+    }
+}
+
+const char* portalBackFrame(int objectID) {
+    if (objectID >= 10 && objectID <= 111) {
+        switch (objectID) {
+            case 11: return "portal_02_back_001.png";
+            case 12: return "portal_03_back_001.png";
+            case 13: return "portal_04_back_001.png";
+            case 45: return "portal_05_back_001.png";
+            case 46: return "portal_06_back_001.png";
+            case 47: return "portal_07_back_001.png";
+            case 99: return "portal_08_back_001.png";
+            case 101: return "portal_09_back_001.png";
+            case 111: return "portal_10_back_001.png";
+            default: return "portal_01_back_001.png";
+        }
+    }
+    switch (objectID) {
+        case 286: return "portal_11_back_001.png";
+        case 287: return "portal_12_back_001.png";
+        case 660: return "portal_13_back_001.png";
+        case 745: return "portal_14_back_001.png";
+        case 747: return "portal_15_back_001.png";
+        case 749: return "portal_16_back_001.png";
+        case 1331: return "portal_17_back_001.png";
+        case 1933: return "portal_18_back_001.png";
+        case 2064: return "portal_16_back_001.png";
+        case 2902: return "portal_15_back_001.png";
+        case 2926: return "portal_19_back_001.png";
+        default: return "portal_01_back_001.png";
+    }
+}
+
+const char* portalParticlePlist(GameObjectType type) {
+    switch (type) {
+        case GameObjectType::NormalGravityPortal: return "portalEffect01.plist";
+        case GameObjectType::InverseGravityPortal: return "portalEffect02.plist";
+        case GameObjectType::CubePortal: return "portalEffect03.plist";
+        case GameObjectType::ShipPortal: return "portalEffect04.plist";
+        case GameObjectType::InverseMirrorPortal: return "portalEffect02.plist";
+        case GameObjectType::NormalMirrorPortal: return "portalEffect01.plist";
+        case GameObjectType::BallPortal: return "portalEffect02.plist";
+        case GameObjectType::RegularSizePortal: return "portalEffect08.plist";
+        case GameObjectType::MiniSizePortal: return "portalEffect09.plist";
+        case GameObjectType::UfoPortal: return "portalEffect02.plist";
+        case GameObjectType::DualPortal: return "portalEffect09.plist";
+        case GameObjectType::SoloPortal: return "portalEffect09.plist";
+        case GameObjectType::WavePortal: return "portalEffect02.plist";
+        case GameObjectType::RobotPortal: return "portalEffect02.plist";
+        case GameObjectType::SpiderPortal: return "portalEffect02.plist";
+        case GameObjectType::SwingPortal: return "portalEffect02.plist";
+        case GameObjectType::GravityTogglePortal: return "portalEffect02.plist";
+        default: return nullptr;
+    }
 }
 
 class $modify(PlaytestRingObject, RingObject) {
@@ -81,6 +194,7 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
         std::vector<Ref<RingObject>> m_rings;
         std::vector<Ref<GameObject>> m_claimed;
         std::vector<Ref<GameObject>> m_particleOwners;
+        std::vector<Ref<cocos2d::CCSprite>> m_portalBacks;
     };
 
     void releaseOwnedParticles() {
@@ -91,6 +205,39 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
             }
         }
         m_fields->m_particleOwners.clear();
+    }
+
+    void addPortalBacks() {
+        if (!m_objects || !m_objectLayer) {
+            return;
+        }
+        for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
+            if (!obj || !isPortalType(obj->m_objectType)) {
+                continue;
+            }
+            auto back = GameObject::createWithFrame(portalBackFrame(obj->m_objectID));
+            if (!back) {
+                continue;
+            }
+            auto pos = obj->getPosition();
+            if (auto parent = obj->getParent()) {
+                pos = m_objectLayer->convertToNodeSpace(parent->convertToWorldSpace(pos));
+            }
+            back->m_objectID = 0x26;
+            back->setPosition(pos);
+            back->copyGroups(obj);
+            m_objectLayer->addChild(back, obj->getZOrder() - 100);
+            m_fields->m_portalBacks.push_back(back);
+        }
+    }
+
+    void removePortalBacks() {
+        for (auto sprite : m_fields->m_portalBacks) {
+            if (sprite) {
+                sprite->removeFromParent();
+            }
+        }
+        m_fields->m_portalBacks.clear();
     }
 
 void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
@@ -137,6 +284,35 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         sprite->runAction(CCSequence::create(move, clean, nullptr));
     }
 
+    void attachParticle(GameObject* obj, const char* plist, bool tint, cocos2d::ccColor3B color,
+                        const PortalParticleTint* portalTint = nullptr) {
+        if (!obj || !m_objectLayer) {
+            return;
+        }
+        auto p = CCParticleSystemQuad::create(plist, false);
+        if (!p) {
+            return;
+        }
+        p->setPosition(obj->getPosition());
+        p->setRotation(obj->getRotation());
+        p->setScale(obj->getScale());
+        p->setPositionType(kCCPositionTypeGrouped);
+        obj->m_particle = p;
+        if (portalTint) {
+            if (portalTint->hasStart) {
+                p->setStartColor(portalTint->start);
+            }
+            if (portalTint->hasEnd) {
+                p->setEndColor(portalTint->end);
+            }
+        }
+        if (tint) {
+            obj->updateParticleColor(color);
+        }
+        m_objectLayer->addChild(p, obj->getZOrder() - 1);
+        m_fields->m_particleOwners.push_back(obj);
+    }
+
     void onPlaytest() {
         LevelEditorLayer::onPlaytest();
         m_fields->m_origPreviewParticles = m_previewParticles;
@@ -150,6 +326,7 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         }
         m_fields->m_claimed.clear();
         this->releaseOwnedParticles();
+        this->removePortalBacks();
         s_lastOutline.clear();
         s_lastHit.clear();
         s_armed.clear();
@@ -175,42 +352,25 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
                 if (obj->m_particle) {
                     continue;
                 }
-                if (typeinfo_cast<RingObject*>(obj)) {
-                    auto p = CCParticleSystemQuad::create("ringEffect.plist", false);
-                    if (p) {
-                        p->setPosition(obj->getPosition());
-                        p->setRotation(obj->getRotation());
-                        p->setScale(obj->getScale());
-                        p->setPositionType(kCCPositionTypeGrouped);
-                        auto c = ccc4FFromccc3B(getRingColor(obj->m_objectType, obj));
-                        p->setStartColor(c);
-                        p->setEndColor(c);
-                        m_objectLayer->addChild(p, obj->getZOrder() - 1);
-                        obj->m_particle = p;
-                        m_fields->m_particleOwners.push_back(obj);
-                    }
+                if (auto plist = portalParticlePlist(obj->m_objectType)) {
+                    auto tint = portalParticleTint(obj->m_objectType);
+                    this->attachParticle(obj, plist, false, cocos2d::ccColor3B{255, 255, 255}, &tint);
+                } else if (typeinfo_cast<RingObject*>(obj)) {
+                    auto tint = obj->m_objectType == GameObjectType::DropRing
+                        ? cocos2d::ccColor3B{255, 255, 255}
+                        : getRingColor(obj->m_objectType, obj);
+                    this->attachParticle(obj, "ringEffect.plist", true, tint);
                 } else if (obj->m_objectType == GameObjectType::YellowJumpPad ||
                            obj->m_objectType == GameObjectType::PinkJumpPad ||
                            obj->m_objectType == GameObjectType::GravityPad ||
                            obj->m_objectType == GameObjectType::RedJumpPad ||
                            obj->m_objectType == GameObjectType::SpiderPad) {
-                    auto p = CCParticleSystemQuad::create("bumpEffect.plist", false);
-                    if (p) {
-                        p->setPosition(obj->getPosition());
-                        p->setRotation(obj->getRotation());
-                        p->setScale(obj->getScale());
-                        p->setPositionType(kCCPositionTypeGrouped);
-                        auto c = ccc4FFromccc3B(getPadColor(obj->m_objectType, obj));
-                        p->setStartColor(c);
-                        p->setEndColor(c);
-                        m_objectLayer->addChild(p, obj->getZOrder() - 1);
-                        obj->m_particle = p;
-                        m_fields->m_particleOwners.push_back(obj);
-                    }
+                    this->attachParticle(obj, "bumpEffect.plist", true, getPadColor(obj->m_objectType, obj));
                 }
             }
         }
         FMODAudioEngine::sharedEngine()->enableMetering();
+        this->addPortalBacks();
         if (auto scene = CCDirector::sharedDirector()->getRunningScene()) {
             if (auto old = scene->getChildByID("gravity-effect"_spr)) {
                 old->removeFromParent();
@@ -341,6 +501,7 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         }
         m_fields->m_claimed.clear();
         this->releaseOwnedParticles();
+        this->removePortalBacks();
         s_lastOutline.clear();
         s_lastHit.clear();
         s_armed.clear();
