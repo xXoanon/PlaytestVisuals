@@ -1,10 +1,13 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
+#include <Geode/modify/DrawGridLayer.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
+#include <Geode/modify/EditorUI.hpp>
 #include <Geode/modify/RingObject.hpp>
 #include <Geode/binding/GravityEffectSprite.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -57,6 +60,7 @@ PortalParticleTint portalParticleTint(GameObjectType type, int objectID) {
 }
 
 static int s_frame = 0;
+static int s_playtestCount = 0;
 static std::unordered_map<RingObject*, int> s_lastOutline;
 static std::unordered_map<RingObject*, int> s_lastHit;
 static std::unordered_set<RingObject*> s_armed;
@@ -209,6 +213,13 @@ struct SpeedPortalRing {
     cocos2d::ccColor3B color;
 };
 
+struct MirrorOrig {
+    cocos2d::CCPoint pos;
+    bool flipX;
+    bool flipY;
+    float rot;
+};
+
 bool speedPortalRingData(int objectID, SpeedPortalRing& out) {
     switch (objectID) {
         case 200: out = {60.f, {255, 255, 0}}; return true;
@@ -321,15 +332,24 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
         std::vector<Ref<RingObject>> m_rings;
         std::vector<Ref<GameObject>> m_claimed;
         std::vector<Ref<GameObject>> m_particleOwners;
+        std::vector<Ref<cocos2d::CCParticleSystemQuad>> m_ownedParticles;
         std::vector<Ref<cocos2d::CCSprite>> m_portalBacks;
         std::vector<Ref<GameObject>> m_portalBackOwners;
         std::vector<Ref<CCCircleWave>> m_speedRings;
         std::vector<Ref<cocos2d::CCSprite>> m_speedGlows;
         std::unordered_set<GameObject*> m_speedTouching;
         std::unordered_set<GameObject*> m_speedFired;
+        std::unordered_map<GameObject*, MirrorOrig> m_mirrorOrig;
+        bool m_mirrorWasFlipping = false;
     };
 
     void releaseOwnedParticles() {
+        for (auto p : m_fields->m_ownedParticles) {
+            if (p) {
+                p->removeFromParent();
+            }
+        }
+        m_fields->m_ownedParticles.clear();
         for (auto obj : m_fields->m_particleOwners) {
             if (obj && obj->m_particle) {
                 obj->m_particle->removeFromParent();
@@ -337,6 +357,29 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
             }
         }
         m_fields->m_particleOwners.clear();
+    }
+
+    void syncOwnedParticles() {
+        if (!m_objectLayer) {
+            return;
+        }
+        auto& owners = m_fields->m_particleOwners;
+        auto& parts = m_fields->m_ownedParticles;
+        for (size_t i = 0; i < owners.size() && i < parts.size(); i++) {
+            auto obj = owners[i].data();
+            auto p = parts[i].data();
+            if (!obj || !p) {
+                continue;
+            }
+            if (!p->getParent()) {
+                m_objectLayer->addChild(p, obj->getZOrder() - 1);
+            }
+            if (obj->m_particle != p) {
+                obj->m_particle = p;
+            }
+            p->setPosition(this->worldPositionOf(obj));
+            p->setVisible(obj->isVisible() && obj->getParent() != nullptr);
+        }
     }
 
     void addPortalBacks() {
@@ -383,6 +426,7 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
         back->setScaleX(obj->getScaleX());
         back->setScaleY(obj->getScaleY());
         back->setFlipY(obj->isFlipY());
+        back->setVisible(obj->isVisible() && obj->getParent() != nullptr);
     }
 
     void syncPortalBacks() {
@@ -444,6 +488,217 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
         }
     }
 
+    void resetMirrorState() {
+        m_gameState.m_isFlipped = false;
+        m_gameState.m_levelFlipProgress = 0.f;
+        m_gameState.m_inSecondHalfOfFlipAnimation = false;
+        m_gameState.m_isFlipping = false;
+        m_gameState.stopTweenAction(7);
+        m_cameraFlip = 1.f;
+        this->stopActionByTag(14);
+    }
+
+    void unmirrorObjectLayer() {
+        if (!m_objectLayer) {
+            return;
+        }
+        float sx = m_objectLayer->getScaleX();
+        if (sx >= 0.f) {
+            return;
+        }
+        float winW = cocos2d::CCDirector::sharedDirector()->getWinSize().width;
+        m_objectLayer->setScaleX(-sx);
+        m_objectLayer->setPositionX(winW - m_objectLayer->getPositionX());
+    }
+
+    void clearPauseMirror() {
+        if (m_playbackMode == PlaybackMode::Paused
+            && (m_cameraFlip != 1.f || !m_fields->m_mirrorOrig.empty())) {
+            this->pauseMirror();
+        }
+    }
+
+    void pauseMirror() {
+        bool wasFlipped = m_gameState.m_isFlipped;
+        this->restoreMirrorObjects();
+        this->resetMirrorState();
+        if (wasFlipped) {
+            m_gameState.m_isFlipped = true;
+        }
+        this->unmirrorObjectLayer();
+        this->syncPortalBacks();
+        this->syncOwnedParticles();
+        this->dropSpeedVisuals();
+    }
+
+    void resumeMirror() {
+        if (m_playbackMode != PlaybackMode::Playing || !m_gameState.m_isFlipped
+            || !m_fields->m_mirrorOrig.empty()) {
+            return;
+        }
+        float progress = m_gameState.m_levelFlipProgress;
+        if ((progress != 0.f && progress != 1.f) || m_gameState.m_isFlipping) {
+            return;
+        }
+        this->remirrorObjects();
+    }
+
+    void mirrorObject(GameObject* obj, MirrorOrig& orig, float visW, float camX, float eff) {
+        float x = orig.pos.x + (visW - 2.f * (orig.pos.x - camX)) * eff;
+        obj->setPosition(cocos2d::CCPoint(x, orig.pos.y));
+        bool useY = (fabsf(orig.rot) == 90.f || fabsf(orig.rot) == 270.f);
+        bool flipped = (eff >= 0.5f);
+        if (useY) {
+            obj->setFlipY(orig.flipY != flipped);
+        } else {
+            obj->setFlipX(orig.flipX != flipped);
+        }
+        if (static_cast<int>(orig.rot) % 90 != 0) {
+            obj->setRotation(flipped ? -orig.rot : orig.rot);
+        }
+    }
+
+    void updateMirrorObjects() {
+        float progress = m_gameState.m_levelFlipProgress;
+        bool flipping = (progress != 0.f && progress != 1.f) || m_gameState.m_isFlipping;
+        if (!flipping) {
+            if (m_fields->m_mirrorWasFlipping) {
+                for (auto& entry : m_fields->m_mirrorOrig) {
+                    auto obj = entry.first;
+                    auto& orig = entry.second;
+                    if (!obj) {
+                        continue;
+                    }
+                    obj->setFlipX(orig.flipX);
+                    obj->setFlipY(orig.flipY);
+                    obj->setRotation(orig.rot);
+                    if (isPortalObject(obj) || speedPortalVariant(obj->m_objectID) != 0) {
+                        log::info("[mirror] portal end id={} fx={} fy={} sx={} sy={} rot={}",
+                            obj->m_objectID, (int)obj->isFlipX(), (int)obj->isFlipY(),
+                            obj->getScaleX(), obj->getScaleY(), obj->getRotation());
+                    }
+                }
+                log::info("[mirror] flip end progress={} flagged={}", progress, m_fields->m_mirrorOrig.size());
+                m_fields->m_mirrorWasFlipping = false;
+            } else if (progress == 0.f && m_cameraFlip != -1.f) {
+                for (auto& entry : m_fields->m_mirrorOrig) {
+                    if (entry.first) {
+                        entry.second.pos = entry.first->getPosition();
+                    }
+                }
+            }
+            return;
+        }
+        m_fields->m_mirrorWasFlipping = true;
+        float eff = (m_cameraFlip == -1.f) ? 1.f - progress : progress;
+        float zoom = m_gameState.m_cameraZoom;
+        float camX = m_gameState.m_cameraPosition.x;
+        float winW = CCDirector::sharedDirector()->getWinSize().width;
+        float visW = winW / zoom;
+        bool firstFlipFrame = m_fields->m_mirrorOrig.empty();
+        if (firstFlipFrame) {
+            log::info("[mirror] flip start progress={} camFlip={} zoom={} camX={} winW={}",
+                progress, m_cameraFlip, zoom, camX, winW);
+        }
+        if (!m_objects) {
+            return;
+        }
+        for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
+            if (!obj || !obj->isVisible()) {
+                continue;
+            }
+            if (obj == m_player1 || obj == m_player2) {
+                log::info("[mirror] PLAYER IN M_OBJECTS");
+                continue;
+            }
+            if (firstFlipFrame && (isPortalObject(obj) || speedPortalVariant(obj->m_objectID) != 0)) {
+                log::info("[mirror] portal id={} fx={} fy={} sx={} sy={} rot={}",
+                    obj->m_objectID, (int)obj->isFlipX(), (int)obj->isFlipY(),
+                    obj->getScaleX(), obj->getScaleY(), obj->getRotation());
+            }
+            auto [found, fresh] = m_fields->m_mirrorOrig.try_emplace(obj);
+            if (fresh) {
+                found->second.pos = obj->getRealPosition();
+                found->second.flipX = obj->isFlipX();
+                found->second.flipY = obj->isFlipY();
+                found->second.rot = obj->getRotation();
+            }
+            auto& orig = found->second;
+            this->mirrorObject(obj, orig, visW, camX, eff);
+        }
+        auto& glows = m_fields->m_speedGlows;
+        std::vector<Ref<cocos2d::CCSprite>> liveGlows;
+        for (auto glow : glows) {
+            if (glow && glow->getParent()) {
+                liveGlows.push_back(glow);
+            }
+        }
+        glows.swap(liveGlows);
+        for (auto glow : glows) {
+            auto owner = typeinfo_cast<GameObject*>(glow->getUserObject());
+            if (!owner) {
+                continue;
+            }
+            glow->setPosition(this->worldPositionOf(owner));
+        }
+    }
+
+    void restoreMirrorObjects() {
+        for (auto& entry : m_fields->m_mirrorOrig) {
+            auto obj = entry.first;
+            auto& orig = entry.second;
+            if (!obj) {
+                continue;
+            }
+            obj->setPosition(orig.pos);
+            obj->setFlipX(orig.flipX);
+            obj->setFlipY(orig.flipY);
+            obj->setRotation(orig.rot);
+        }
+        m_fields->m_mirrorOrig.clear();
+        m_fields->m_mirrorWasFlipping = false;
+    }
+
+    void remirrorObjects() {
+        if (!m_objects || !m_objectLayer) {
+            return;
+        }
+        float zoom = m_gameState.m_cameraZoom;
+        float camX = m_gameState.m_cameraPosition.x;
+        float winW = CCDirector::sharedDirector()->getWinSize().width;
+        float visW = winW / zoom;
+        for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
+            if (!obj) {
+                continue;
+            }
+            if (obj == m_player1 || obj == m_player2) {
+                continue;
+            }
+            auto [found, fresh] = m_fields->m_mirrorOrig.try_emplace(obj);
+            if (fresh) {
+                found->second.pos = obj->getRealPosition();
+                found->second.flipX = obj->isFlipX();
+                found->second.flipY = obj->isFlipY();
+                found->second.rot = obj->getRotation();
+            }
+            auto& orig = found->second;
+            float x = orig.pos.x + (visW - 2.f * (orig.pos.x - camX));
+            obj->setPosition(cocos2d::CCPoint(x, orig.pos.y));
+        }
+        m_gameState.m_isFlipped = true;
+        m_gameState.m_levelFlipProgress = 1.f;
+        m_gameState.m_inSecondHalfOfFlipAnimation = false;
+        m_gameState.m_isFlipping = false;
+        m_cameraFlip = -1.f;
+        m_fields->m_mirrorWasFlipping = false;
+        if (m_objectLayer->getScaleX() > 0.f) {
+            m_objectLayer->setScaleX(-m_objectLayer->getScaleX());
+            m_objectLayer->setPositionX(winW - m_objectLayer->getPositionX());
+        }
+        this->syncPortalBacks();
+        this->syncOwnedParticles();
+    }
+
     void removePortalBacks() {
         for (auto sprite : m_fields->m_portalBacks) {
             if (sprite) {
@@ -466,6 +721,21 @@ class $modify(PlaytestEditorLayer, LevelEditorLayer) {
         m_fields->m_speedGlows.clear();
         m_fields->m_speedTouching.clear();
         m_fields->m_speedFired.clear();
+    }
+
+    void dropSpeedVisuals() {
+        for (auto glow : m_fields->m_speedGlows) {
+            if (glow) {
+                glow->removeFromParent();
+            }
+        }
+        m_fields->m_speedGlows.clear();
+        for (auto ring : m_fields->m_speedRings) {
+            if (ring) {
+                ring->removeFromParent();
+            }
+        }
+        m_fields->m_speedRings.clear();
     }
 
 void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
@@ -526,6 +796,12 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         p->setRotation(obj->getRotation());
         p->setScale(obj->getScale());
         p->setPositionType(kCCPositionTypeGrouped);
+        if (obj->m_particle) {
+            log::info("[mirror] replacing pre-existing particle on id={} session={}",
+                obj->m_objectID, s_playtestCount);
+            obj->m_particle->removeFromParent();
+            obj->m_particle = nullptr;
+        }
         obj->m_particle = p;
         if (portalTint) {
             if (portalTint->hasStart) {
@@ -540,6 +816,7 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         }
         m_objectLayer->addChild(p, obj->getZOrder() - 1);
         m_fields->m_particleOwners.push_back(obj);
+        m_fields->m_ownedParticles.push_back(p);
     }
 
     void addSpeedPortalRig(GameObject* obj) {
@@ -563,6 +840,7 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         shine->setScaleY(obj->getScaleY());
         shine->setFlipX(obj->isFlipX());
         shine->setFlipY(obj->isFlipY());
+        shine->setUserObject(obj);
         shine->runAction(CCSequence::create(
             CCFadeIn::create(0.05f),
             CCFadeOut::create(0.4f),
@@ -599,6 +877,7 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         ring->m_blendAdditive = true;
         ring->m_opacityMod = 1.f;
         auto parent = obj->getParent();
+        ring->followObject(obj, false);
         m_objectLayer->addChild(ring, (parent ? parent->getZOrder() : obj->getZOrder()) - 1);
         m_fields->m_speedRings.push_back(ring);
     }
@@ -622,6 +901,7 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
 
     void onPlaytest() {
         LevelEditorLayer::onPlaytest();
+        s_playtestCount++;
         m_fields->m_origPreviewParticles = m_previewParticles;
         m_previewParticles = true;
         this->updatePreviewParticles();
@@ -640,6 +920,8 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
         s_scaleReset.clear();
         s_resetDelay = 0.f;
         s_prevPlayerX = NAN;
+        this->restoreMirrorObjects();
+        this->resetMirrorState();
         if (m_objects) {
             for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
                 if (!obj) {
@@ -704,6 +986,8 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
     }
 
     void updateVisibility(float dt) {
+        this->clearPauseMirror();
+        this->resumeMirror();
         LevelEditorLayer::updateVisibility(dt);
         if (m_playbackMode != PlaybackMode::Playing) {
             return;
@@ -727,9 +1011,14 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
             }
             ring->setRScale(std::min(v + 0.3f, 1.2f));
         }
+        this->updateMirrorObjects();
+        this->syncPortalBacks();
+        this->syncOwnedParticles();
     }
 
     void updateEditor(float dt) {
+        this->clearPauseMirror();
+        this->resumeMirror();
         auto gm = GameManager::sharedState();
         auto origPlayLayer = gm->m_playLayer;
         bool origEnabled = gm->m_editorEnabled;
@@ -741,7 +1030,6 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
             gm->m_editorEnabled = false;
             scoped = true;
             s_frame++;
-            this->syncPortalBacks();
             this->updateSpeedStreak();
             float pulse = FMODAudioEngine::sharedEngine()->m_pulse1;
             if (m_player1) {
@@ -801,6 +1089,8 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
 
     void onStopPlaytest() {
         s_prevPlayerX = NAN;
+        this->restoreMirrorObjects();
+        this->resetMirrorState();
         m_fields->m_speedTouching.clear();
         m_fields->m_speedFired.clear();
         for (auto ring : m_fields->m_rings) {
@@ -877,9 +1167,16 @@ void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color) {
 }
 
 class $modify(PlaytestGameLayer, GJBaseGameLayer) {
+    void collisionCheckObjects(PlayerObject* player, gd::vector<GameObject*>* objects, int count, float dt) {
+        bool editor = m_isEditor;
+        m_isEditor = false;
+        GJBaseGameLayer::collisionCheckObjects(player, objects, count, dt);
+        m_isEditor = editor;
+    }
+
     void toggleDualMode(GameObject* obj, bool dual, PlayerObject* player, bool noEffects) {
         GJBaseGameLayer::toggleDualMode(obj, dual, player, noEffects);
-        if (!m_isEditor) {
+        if (!(m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             return;
         }
         if (!m_player2) {
@@ -907,5 +1204,64 @@ class $modify(PlaytestGameLayer, GJBaseGameLayer) {
                 m_player2->m_regularTrail->reset();
             }
         }
+    }
+};
+
+class $modify(PlaytestDrawGridLayer, DrawGridLayer) {
+    void draw() {
+        cocos2d::CCNode* layers[2] = {m_objectLayer, this->getParent()};
+        cocos2d::CCNode* unflipped[2] = {nullptr, nullptr};
+        float oldScale[2] = {0.f, 0.f};
+        float oldPos[2] = {0.f, 0.f};
+        int count = 0;
+        float winW = 0.f;
+        bool sized = false;
+        for (auto* layer : layers) {
+            if (!layer || layer->getScaleX() >= 0.f) {
+                continue;
+            }
+            bool done = false;
+            for (int i = 0; i < count; i++) {
+                if (unflipped[i] == layer) {
+                    done = true;
+                    break;
+                }
+            }
+            if (done) {
+                continue;
+            }
+            if (!sized) {
+                winW = cocos2d::CCDirector::sharedDirector()->getWinSize().width;
+                sized = true;
+            }
+            unflipped[count] = layer;
+            oldScale[count] = layer->getScaleX();
+            oldPos[count] = layer->getPositionX();
+            layer->setScaleX(-oldScale[count]);
+            layer->setPositionX(winW - oldPos[count]);
+            count++;
+        }
+        DrawGridLayer::draw();
+        for (int i = count - 1; i >= 0; i--) {
+            unflipped[i]->setScaleX(oldScale[i]);
+            unflipped[i]->setPositionX(oldPos[i]);
+        }
+    }
+};
+
+class $modify(PlaytestPauseButton, EditorUI) {
+    void onPlaytest(cocos2d::CCObject* sender) {
+        auto editor = LevelEditorLayer::get();
+        bool wasPlaying = editor && editor->m_playbackMode == PlaybackMode::Playing;
+        EditorUI::onPlaytest(sender);
+        auto playtest = static_cast<PlaytestEditorLayer*>(LevelEditorLayer::get());
+        if (!playtest) {
+            return;
+        }
+        if (wasPlaying) {
+            playtest->pauseMirror();
+            return;
+        }
+        playtest->resumeMirror();
     }
 };

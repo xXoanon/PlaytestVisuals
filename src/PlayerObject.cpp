@@ -157,6 +157,7 @@ void spawnPortalShine(GameObject* obj, cocos2d::CCNode* layer, std::vector<Ref<c
         sprite->setScaleY(obj->getScaleY());
         sprite->setFlipX(obj->isFlipX());
         sprite->setFlipY(obj->isFlipY());
+        sprite->setUserObject(obj);
         sprite->runAction(CCSequence::create(
             CCFadeIn::create(0.05f),
             CCFadeOut::create(0.4f),
@@ -185,7 +186,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
         if (!PlayerObject::init(player, ship, gameLayer, layer, playLayer)) {
             return false;
         }
-        if (gameLayer && gameLayer->m_isEditor) {
+        if (gameLayer && (gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             m_playEffects = true;
             this->setupStreak();
             this->addAllParticles();
@@ -194,7 +195,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void activateStreak() {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             auto gm = GameManager::sharedState();
             bool effects = m_playEffects;
             bool editor = m_gameLayer->m_isEditor;
@@ -223,7 +224,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
         auto gm = GameManager::sharedState();
         auto play = gm->m_playLayer;
         bool swapped = false;
-        if (!play && m_gameLayer && m_gameLayer->m_isEditor) {
+        if (!play && m_gameLayer && (m_gameLayer->m_isEditor || gm->m_levelEditorLayer)) {
             gm->m_playLayer = reinterpret_cast<PlayLayer*>(m_gameLayer);
             swapped = true;
         }
@@ -232,8 +233,26 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
         if (swapped && gm->m_playLayer == reinterpret_cast<PlayLayer*>(m_gameLayer)) {
             gm->m_playLayer = play;
         }
-        if (!m_gameLayer || !m_gameLayer->m_isEditor) {
+        if (!m_gameLayer || !(m_gameLayer->m_isEditor || gm->m_levelEditorLayer)) {
             return;
+        }
+        auto& glows = m_fields->m_portalGlows;
+        std::vector<Ref<cocos2d::CCSprite>> liveGlows;
+        for (auto glow : glows) {
+            if (glow && glow->getParent()) {
+                liveGlows.push_back(glow);
+            }
+        }
+        glows.swap(liveGlows);
+        auto glowLayer = m_gameLayer->m_objectLayer;
+        if (glowLayer) {
+            for (auto glow : glows) {
+                auto owner = typeinfo_cast<GameObject*>(glow->getUserObject());
+                if (!owner) {
+                    continue;
+                }
+                glow->setPosition(portalLayerPosition(owner, glowLayer));
+            }
         }
         if (!m_fields->m_gravityInit) {
             m_fields->m_gravityInit = true;
@@ -251,7 +270,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void placeStreakPoint() {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             auto gm = GameManager::sharedState();
             bool editor = m_gameLayer->m_isEditor;
             auto lel = gm->m_levelEditorLayer;
@@ -288,7 +307,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     void spawnPortalCircle(cocos2d::ccColor3B color, float radius) {
         s_portalColor = color;
         s_portalColorFresh = true;
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             if (!m_gameLayer->m_objectLayer) {
                 return;
             }
@@ -313,7 +332,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void toggleDartMode(bool enable, bool noEffects) {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             auto gm = GameManager::sharedState();
             bool effects = m_playEffects;
             bool enabled = gm->m_editorEnabled;
@@ -360,7 +379,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void spawnScaleCircle() {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             if (!m_playEffects) {
                 return;
             }
@@ -392,7 +411,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void incrementJumps() {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             return;
         }
         PlayerObject::incrementJumps();
@@ -402,7 +421,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
         auto gm = GameManager::sharedState();
         auto old = gm->m_playLayer;
         bool swapped = false;
-        if (!old && m_gameLayer && m_gameLayer->m_isEditor) {
+        if (!old && m_gameLayer && (m_gameLayer->m_isEditor || gm->m_levelEditorLayer)) {
             gm->m_playLayer = reinterpret_cast<PlayLayer*>(m_gameLayer);
             swapped = true;
         }
@@ -458,7 +477,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void playSpiderDashEffect(cocos2d::CCPoint from, cocos2d::CCPoint to) {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             bool effects = m_playEffects;
             m_playEffects = false;
             PlayerObject::playSpiderDashEffect(from, to);
@@ -511,7 +530,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void ringJump(RingObject* ring, bool skipCheck) {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             bool effects = m_playEffects;
             double yBefore = m_yVelocity;
             bool flipBefore = m_isUpsideDown;
@@ -556,7 +575,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void playBumpEffect(int type, GameObject* obj) {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             if (!m_playEffects) {
                 return;
             }
@@ -587,7 +606,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void spawnDualCircle() {
-        if (m_gameLayer && m_gameLayer->m_isEditor) {
+        if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             if (!m_playEffects) {
                 return;
             }
@@ -618,7 +637,7 @@ class $modify(PlaytestBaseLayer, GJBaseGameLayer) {
 
     void playerWillSwitchMode(PlayerObject* player, GameObject* object) {
         GJBaseGameLayer::playerWillSwitchMode(player, object);
-        if (!m_isEditor) {
+        if (!(m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             return;
         }
         if (!object || object->m_objectID != 12 || object->m_hasNoEffects) {
@@ -633,5 +652,28 @@ class $modify(PlaytestBaseLayer, GJBaseGameLayer) {
             return;
         }
         spawnPortalShine(object, m_objectLayer, m_fields->m_cubeGlows);
+    }
+
+    void update(float dt) {
+        GJBaseGameLayer::update(dt);
+        auto& glows = m_fields->m_cubeGlows;
+        std::vector<Ref<cocos2d::CCSprite>> liveGlows;
+        for (auto glow : glows) {
+            if (glow && glow->getParent()) {
+                liveGlows.push_back(glow);
+            }
+        }
+        glows.swap(liveGlows);
+        auto layer = m_objectLayer;
+        if (!layer) {
+            return;
+        }
+        for (auto glow : glows) {
+            auto owner = typeinfo_cast<GameObject*>(glow->getUserObject());
+            if (!owner) {
+                continue;
+            }
+            glow->setPosition(portalLayerPosition(owner, layer));
+        }
     }
 };
