@@ -3,5 +3,4 @@
 using namespace geode::prelude;
 
 $on_mod(Loaded) {
-    log::info("Playtest Visuals loaded");
 }

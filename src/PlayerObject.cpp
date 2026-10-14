@@ -1,179 +1,14 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayerObject.hpp>
-#include <Geode/modify/GJBaseGameLayer.hpp>
+
+#include "GravitySweep.hpp"
+#include "Particles.hpp"
+#include "PortalShine.hpp"
+#include "Rings.hpp"
+
 #include <cmath>
 
 using namespace geode::prelude;
-
-void triggerGravitySweep(bool flip, bool sideways, cocos2d::ccColor3B color);
-
-bool tryConsumeRingWave(RingObject* ring, bool click);
-
-static cocos2d::ccColor3B s_portalColor = {255, 255, 255};
-static bool s_portalColorFresh = false;
-
-void resetPortalColor() {
-    s_portalColorFresh = false;
-}
-
-cocos2d::ccColor3B gravitySweepColor(bool flip) {
-    if (s_portalColorFresh) {
-        return s_portalColor;
-    }
-    return flip ? cocos2d::ccColor3B{255, 200, 0} : cocos2d::ccColor3B{0, 150, 255};
-}
-
-cocos2d::ccColor3B getPadColor(GameObjectType type, GameObject* obj) {
-    if (obj) {
-        auto c = obj->getColor();
-        if (c.r != 255 || c.g != 255 || c.b != 255) {
-            return c;
-        }
-    }
-    if (type == GameObjectType::PinkJumpPad || type == GameObjectType::SpiderPad) {
-        return {255, 0, 255};
-    }
-    if (type == GameObjectType::GravityPad) {
-        return {0, 255, 255};
-    }
-    if (type == GameObjectType::RedJumpPad) {
-        return {255, 50, 0};
-    }
-    return {255, 200, 0};
-}
-
-cocos2d::ccColor3B getRingColor(GameObjectType type, GameObject* obj) {
-    if (obj) {
-        if (auto sprite = obj->m_colorSprite) {
-            auto c = sprite->getColor();
-            if (c.r != 255 || c.g != 255 || c.b != 255) {
-                return c;
-            }
-        }
-        auto c = obj->getColor();
-        if (c.r != 255 || c.g != 255 || c.b != 255) {
-            return c;
-        }
-    }
-    if (type == GameObjectType::PinkJumpRing || type == GameObjectType::SpiderOrb) {
-        return {255, 105, 255};
-    }
-    if (type == GameObjectType::GravityRing) {
-        return {100, 255, 255};
-    }
-    if (type == GameObjectType::GreenRing) {
-        return {100, 255, 85};
-    }
-    if (type == GameObjectType::DropRing) {
-        return {25, 25, 25};
-    }
-    if (type == GameObjectType::RedJumpRing) {
-        return {255, 95, 40};
-    }
-    if (type == GameObjectType::DashRing) {
-        return {0, 255, 0};
-    }
-    if (type == GameObjectType::GravityDashRing) {
-        return {255, 0, 210};
-    }
-    if (type == GameObjectType::YellowJumpRing) {
-        return {255, 255, 100};
-    }
-    return {200, 200, 255};
-}
-
-int portalShineVariant(int objectID) {
-    switch (objectID) {
-        case 10:
-        case 11:
-        case 2926: return 1;
-        case 12:
-        case 13:
-        case 47:
-        case 111:
-        case 660:
-        case 745:
-        case 1331:
-        case 1933: return 2;
-        case 45:
-        case 46: return 3;
-        case 99:
-        case 101: return 4;
-        case 286:
-        case 287: return 5;
-        case 747:
-        case 749:
-        case 2064:
-        case 2902: return 6;
-        default: return 0;
-    }
-}
-
-cocos2d::CCPoint portalLayerPosition(GameObject* portal, cocos2d::CCNode* layer) {
-    auto pos = portal->getPosition();
-    if (auto parent = portal->getParent()) {
-        pos = layer->convertToNodeSpace(parent->convertToWorldSpace(pos));
-    }
-    return pos;
-}
-
-void spawnPortalShine(GameObject* obj, cocos2d::CCNode* layer, std::vector<Ref<cocos2d::CCSprite>>& glows) {
-    if (!obj || !layer) {
-        return;
-    }
-    auto variant = portalShineVariant(obj->m_objectID);
-    if (!variant) {
-        return;
-    }
-    ccBlendFunc additive;
-    additive.src = GL_SRC_ALPHA;
-    additive.dst = GL_ONE;
-    auto parent = obj->getParent();
-    auto pos = portalLayerPosition(obj, layer);
-    std::vector<Ref<cocos2d::CCSprite>> live;
-    for (auto glow : glows) {
-        if (glow && glow->getParent()) {
-            live.push_back(glow);
-        }
-    }
-    glows.swap(live);
-    for (auto glow : glows) {
-        if (glow->getParent() == layer && glow->getPosition() == pos) {
-            return;
-        }
-    }
-    int z = (parent ? parent->getZOrder() : obj->getZOrder()) + 1;
-    for (auto part : {"front", "back"}) {
-        auto sprite = cocos2d::CCSprite::createWithSpriteFrameName(
-            fmt::format("portalshine_{:02}_{}_001.png", variant, part).c_str());
-        if (!sprite) {
-            continue;
-        }
-        sprite->setBlendFunc(additive);
-        sprite->setOpacity(0);
-        sprite->setPosition(pos);
-        sprite->setRotation(obj->getRotation());
-        sprite->setScaleX(obj->getScaleX());
-        sprite->setScaleY(obj->getScaleY());
-        sprite->setFlipX(obj->isFlipX());
-        sprite->setFlipY(obj->isFlipY());
-        sprite->setUserObject(obj);
-        sprite->runAction(CCSequence::create(
-            CCFadeIn::create(0.05f),
-            CCFadeOut::create(0.4f),
-            CCCallFunc::create(sprite, callfunc_selector(CCNode::removeFromParent)),
-            nullptr));
-        layer->addChild(sprite, z);
-        glows.push_back(sprite);
-    }
-    if (auto child = obj->getChildByTag(91)) {
-        if (auto extra = cocos2d::CCSprite::createWithSpriteFrameName("portal_extra_shine_001.png")) {
-            auto size = child->getContentSize();
-            extra->setPosition(cocos2d::CCPoint(size.width * 0.5f, size.height * 0.5f));
-            child->addChild(extra, 1);
-        }
-    }
-}
 
 class $modify(PlaytestPlayerObject, PlayerObject) {
     struct Fields {
@@ -187,7 +22,6 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
             return false;
         }
         if (gameLayer && (gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
-            m_playEffects = true;
             this->setupStreak();
             this->addAllParticles();
         }
@@ -236,24 +70,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
         if (!m_gameLayer || !(m_gameLayer->m_isEditor || gm->m_levelEditorLayer)) {
             return;
         }
-        auto& glows = m_fields->m_portalGlows;
-        std::vector<Ref<cocos2d::CCSprite>> liveGlows;
-        for (auto glow : glows) {
-            if (glow && glow->getParent()) {
-                liveGlows.push_back(glow);
-            }
-        }
-        glows.swap(liveGlows);
-        auto glowLayer = m_gameLayer->m_objectLayer;
-        if (glowLayer) {
-            for (auto glow : glows) {
-                auto owner = typeinfo_cast<GameObject*>(glow->getUserObject());
-                if (!owner) {
-                    continue;
-                }
-                glow->setPosition(portalLayerPosition(owner, glowLayer));
-            }
-        }
+        syncPortalShine(m_fields->m_portalGlows, m_gameLayer->m_objectLayer);
         if (!m_fields->m_gravityInit) {
             m_fields->m_gravityInit = true;
             m_fields->m_gravity = m_isUpsideDown;
@@ -305,8 +122,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
     }
 
     void spawnPortalCircle(cocos2d::ccColor3B color, float radius) {
-        s_portalColor = color;
-        s_portalColorFresh = true;
+        setPortalColor(color);
         if (m_gameLayer && (m_gameLayer->m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
             if (!m_gameLayer->m_objectLayer) {
                 return;
@@ -569,6 +385,7 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
             wave->setPosition(ring->getPosition());
             wave->followObject(ring, false);
             m_gameLayer->m_objectLayer->addChild(wave, ring->getZOrder());
+            expireRingWave(wave, 0.35f);
             return;
         }
         PlayerObject::ringJump(ring, skipCheck);
@@ -627,53 +444,5 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
             return;
         }
         PlayerObject::spawnDualCircle();
-    }
-};
-
-class $modify(PlaytestBaseLayer, GJBaseGameLayer) {
-    struct Fields {
-        std::vector<Ref<cocos2d::CCSprite>> m_cubeGlows;
-    };
-
-    void playerWillSwitchMode(PlayerObject* player, GameObject* object) {
-        GJBaseGameLayer::playerWillSwitchMode(player, object);
-        if (!(m_isEditor || GameManager::sharedState()->m_levelEditorLayer)) {
-            return;
-        }
-        if (!object || object->m_objectID != 12 || object->m_hasNoEffects) {
-            return;
-        }
-        auto gm = GameManager::sharedState();
-        auto lel = gm->m_levelEditorLayer;
-        if (!lel || lel->m_playbackMode != PlaybackMode::Playing) {
-            return;
-        }
-        if (!m_objectLayer) {
-            return;
-        }
-        spawnPortalShine(object, m_objectLayer, m_fields->m_cubeGlows);
-    }
-
-    void update(float dt) {
-        GJBaseGameLayer::update(dt);
-        auto& glows = m_fields->m_cubeGlows;
-        std::vector<Ref<cocos2d::CCSprite>> liveGlows;
-        for (auto glow : glows) {
-            if (glow && glow->getParent()) {
-                liveGlows.push_back(glow);
-            }
-        }
-        glows.swap(liveGlows);
-        auto layer = m_objectLayer;
-        if (!layer) {
-            return;
-        }
-        for (auto glow : glows) {
-            auto owner = typeinfo_cast<GameObject*>(glow->getUserObject());
-            if (!owner) {
-                continue;
-            }
-            glow->setPosition(portalLayerPosition(owner, layer));
-        }
     }
 };
