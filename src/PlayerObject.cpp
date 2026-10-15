@@ -106,16 +106,6 @@ class $modify(PlaytestPlayerObject, PlayerObject) {
         PlayerObject::placeStreakPoint();
     }
 
-    bool levelFlipping() {
-        if (!m_playEffects) {
-            return false;
-        }
-        if (m_gameLayer) {
-            return m_gameLayer->isFlipping();
-        }
-        return false;
-    }
-
     void flashPortalWhite(GameObject* obj) {
         auto layer = m_gameLayer ? m_gameLayer->m_objectLayer : nullptr;
         spawnPortalShine(obj, layer, m_fields->m_portalGlows);
